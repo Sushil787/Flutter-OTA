@@ -5,7 +5,7 @@
 class UpdateClient {
   UpdateClient({required this.updateUrl, required this.packageName});
 
-  /// Backend base URL, e.g. https://flutroid-ota.<account>.workers.dev
+  /// Backend base URL, e.g. http://localhost:8080
   final String updateUrl;
 
   /// App identifier, e.g. com.example.mybird_test

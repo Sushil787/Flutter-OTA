@@ -18,7 +18,7 @@ class Flutroid {
   final String packageName;
 
   /// Base URL of the Flutroid backend, e.g.
-  /// `https://flutroid-ota.<account>.workers.dev`.
+  /// `http://localhost:8080`.
   final String updateUrl;
 
   /// Handles the download/verify/stage lifecycle.

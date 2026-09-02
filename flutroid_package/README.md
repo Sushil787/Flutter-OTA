@@ -13,7 +13,7 @@ import 'package:flutroid_package/flutroid_package.dart';
 
 await Flutroid.initialize(
   packageName: 'com.example.mybird_test',
-  updateUrl: 'https://flutroid-ota.<account>.workers.dev',
+  updateUrl: 'http://localhost:8080',
 );
 
 await Flutroid.instance.checkForUpdate(

@@ -2,7 +2,7 @@
 
 Your own **OTA (over-the-air) code-push for Flutter** — ship Dart code updates to
 installed apps without going through the app store. Shorebird-style, self-hosted
-on Cloudflare's free tier.
+on a plain local server.
 
 ## How it works
 
@@ -11,10 +11,10 @@ on Cloudflare's free tier.
    ┌──────────────┐   (build + upload)   ┌──────────────┐  (check + download)  ┌──────────────┐
    │  your app +  │ ───────────────────▶ │   flutroid   │ ◀─────────────────── │ flutroid_pkg │
    │ local engine │   artifact bytes     │    server    │   patch + artifact   │  (in the app)│
-   └──────────────┘                      │ (Cloudflare) │                      └──────────────┘
-                                         │  R2 + D1     │                              │
-                                         └──────────────┘                     patched engine loads
-                                                                              the staged patch on boot
+   └──────────────┘                      │  Express +   │                      └──────────────┘
+                                         │  SQLite +    │                              │
+                                         │  local files │                     patched engine loads
+                                         └──────────────┘                     the staged patch on boot
 ```
 
 1. You build the app against the **patched engine** and cut a **base release** with the CLI.
@@ -27,14 +27,14 @@ on Cloudflare's free tier.
 
 | Path                 | What it is                                                        |
 |----------------------|-------------------------------------------------------------------|
-| `flutroid_server/`   | Backend on Cloudflare **Workers** + **R2** (artifacts) + **D1** (metadata) |
+| `flutroid_server/`   | Backend — **Express + TypeScript**, **SQLite** metadata, artifacts on local disk |
 | `flutroid_package/`  | Dart updater that ships inside the app (`Flutroid.initialize(...)`) |
 | `flutroid_cli/`      | `flutroid` CLI — build, release, patch, upload                    |
 | `mybird_test/`       | Example Flutter app                                               |
 | `engine/`            | Patched Flutter engine source (git-ignored — built separately)    |
 
-> Status: **scaffold**. Wiring, contracts, and structure are in place; the handler
-> bodies are `TODO` stubs for you to implement.
+> Status: the **server is functional** (upload / list / update-check / download all work).
+> The **CLI** and **updater package** are scaffolds with `TODO` stubs to fill in.
 
 ---
 
@@ -43,27 +43,18 @@ on Cloudflare's free tier.
 ### 0. Prerequisites
 
 - Flutter SDK + the **patched engine** built locally (see `LEARNING.md`).
-- Node.js + a Cloudflare account (free tier).
-- Dart SDK (bundled with Flutter).
+- Node.js (for the server) and the Dart SDK (bundled with Flutter).
 
-### 1. Stand up the backend (once)
+### 1. Run the backend
 
 ```bash
 cd flutroid_server
 npm install
-
-# create storage + database
-wrangler r2 bucket create flutroid-artifacts
-wrangler d1 create flutroid-db          # paste the returned database_id into wrangler.toml
-
-# apply the schema and set the upload secret
-npm run db:init                         # remote  (npm run db:init:local for local dev)
-wrangler secret put UPLOAD_TOKEN        # pick a strong token; the CLI uses the same value
-
-# run locally, or deploy
-npm run dev
-npm run deploy                          # → https://flutroid-ota.<account>.workers.dev
+UPLOAD_TOKEN=dev-secret npm run dev     # http://localhost:8080
 ```
+
+Metadata is written to `data/flutroid.db` (SQLite); uploaded artifacts land in
+`artifacts/` (both git-ignored, auto-created).
 
 ### 2. Integrate the updater into your app
 
@@ -75,7 +66,7 @@ import 'package:flutroid_package/flutroid_package.dart';
 Future<void> main() async {
   await Flutroid.initialize(
     packageName: 'com.example.mybird_test',
-    updateUrl: 'https://flutroid-ota.<account>.workers.dev',
+    updateUrl: 'http://localhost:8080',
   );
 
   await Flutroid.instance.checkForUpdate(
@@ -92,13 +83,13 @@ Future<void> main() async {
 Build against the patched engine, then upload the base artifact:
 
 ```bash
-export FLUTROID_TOKEN=<the UPLOAD_TOKEN you set>
+export FLUTROID_TOKEN=dev-secret          # must match the server's UPLOAD_TOKEN
 
 cd flutroid_cli
 dart pub get
 
 dart run bin/flutroid.dart release \
-  --server https://flutroid-ota.<account>.workers.dev \
+  --server http://localhost:8080 \
   --app-id com.example.mybird_test \
   --platform android \
   --version 1.0.0+1 \
@@ -113,7 +104,7 @@ Change some Dart code, rebuild, and upload it as a patch against the release:
 
 ```bash
 dart run bin/flutroid.dart patch \
-  --server https://flutroid-ota.<account>.workers.dev \
+  --server http://localhost:8080 \
   --app-id com.example.mybird_test \
   --platform android \
   --release 1.0.0+1 \
@@ -130,11 +121,14 @@ following launch — no store update required.
 | Method | Path                              | Who calls it | Purpose                       |
 |--------|-----------------------------------|--------------|-------------------------------|
 | POST   | `/api/v1/apps/:appId/releases`    | CLI          | upload a base release         |
+| GET    | `/api/v1/apps/:appId/releases`    | —            | list releases                 |
 | POST   | `/api/v1/apps/:appId/patches`     | CLI          | upload a patch                |
+| GET    | `/api/v1/apps/:appId/patches`     | —            | list patches                  |
 | GET    | `/api/v1/apps/:appId/updates`     | device       | check for an available update |
 | GET    | `/download/:artifactId`           | device       | download an artifact          |
 | GET    | `/health`                         | anyone       | health check                  |
 
-Uploads require `Authorization: Bearer <UPLOAD_TOKEN>`.
+Uploads require `Authorization: Bearer <UPLOAD_TOKEN>` and send the artifact as the
+raw request body. **Url-encode `+` as `%2B`** in version/release query params.
 
 See each subproject's own `README.md` for details.

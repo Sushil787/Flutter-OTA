@@ -1,5 +1,8 @@
 node_modules/
-.wrangler/
 dist/
-.dev.vars
+
+# Local data (SQLite) + uploaded artifacts
+data/
+artifacts/
+
 *.log

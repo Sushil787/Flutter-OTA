@@ -13,7 +13,7 @@ class FlutroidCommandRunner extends CommandRunner<int> {
     argParser.addOption(
       'server',
       help: 'Backend base URL.',
-      defaultsTo: 'https://flutroid-ota.<account>.workers.dev',
+      defaultsTo: 'http://localhost:8080',
     );
     addCommand(ReleaseCommand());
     addCommand(PatchCommand());
