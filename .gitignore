@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Flutter engine source — large, built separately, not tracked here
+/engine/
+
+# Dart
+.dart_tool/
+.packages
+build/
+
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+
+# Logs
+*.log

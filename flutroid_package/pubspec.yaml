@@ -1,0 +1,14 @@
+name: flutroid_package
+description: Flutroid OTA updater — checks the backend for patches, downloads them, and stages them for the engine.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  http: ^1.2.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.24.0

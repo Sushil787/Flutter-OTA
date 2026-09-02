@@ -1,0 +1,20 @@
+{
+  "name": "flutroid_server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flutroid OTA backend on Cloudflare Workers (Workers + R2 + D1).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute flutroid-db --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute flutroid-db --local --file=./schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0",
+    "@cloudflare/workers-types": "^4.20240925.0",
+    "typescript": "^5.6.0"
+  }
+}
