@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Flutter engine — `engine` is a symlink to the SDK's 3.35.7 engine
+# (<flutter-sdk>/engine/src/flutter); machine-specific, not tracked here.
+/engine
+# Old archived flutter/engine checkout kept aside (safe to delete)
+/engine_archived_ae5c3603d0/
+
+# Dart
+.dart_tool/
+.packages
+build/
+
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+
+# Secrets — real values live here; .env.example is the tracked template
+.env
+.env.local
+
+# Logs
+*.log
