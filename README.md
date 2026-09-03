@@ -44,12 +44,13 @@ Two halves: a **distribution** loop (build → upload → serve → download), a
   └───────────┘                    └──────────────────────┘                      └──────────────┘
 ```
 
-- **CLI** uploads the app's Dart snapshot (`libapp.so`) as a *release* (the
-  baseline in the APK) or a *patch* (new code on top of a release).
+- **CLI** uploads the app's rebuilt Dart snapshot (`libapp.so`) as a *patch*,
+  filed under the release version the app reports for itself.
 - **Server** stores the bytes on disk, content-addressed by sha256, with metadata
   in SQLite, and answers "is there a newer patch for this release?".
 - **Updater package** in the app asks on launch, downloads, verifies the sha256,
-  and **stages** the snapshot at `filesDir/flutroid/staged/libapp.so`.
+  and **stages** the snapshot at `filesDir/flutroid/staged/libapp.so`, reporting
+  progress the app can bind to (see [Update UI](#update-ui)).
 
 ### 2. The engine seam — from the app, not the engine
 
@@ -106,7 +107,7 @@ deleted, so the next start runs the APK's own code.
 | Component            | What it does                                                | Status |
 |----------------------|-------------------------------------------------------------|--------|
 | `flutroid_server/`   | Express + TypeScript, SQLite metadata, local-file artifacts   | ✅ works (verified end-to-end) |
-| `flutroid_cli/`      | `flutroid init` / `release` / `patch`                        | ✅ implemented, unit-tested |
+| `flutroid_cli/`      | `flutroid init` / `flutroid patch`                           | ✅ implemented, unit-tested |
 | `flutroid_package/`  | on-device check / download / verify / stage, + the Android patch loader | ✅ implemented, unit-tested |
 | Android integration  | `getFlutterShellArgs` override, written by `flutroid init`   | ✅ compiles into a release APK; patch load unconfirmed on hardware |
 | `flutroid_test/`     | example app — shows the running patch and stages new ones     | — |
@@ -157,13 +158,26 @@ it to the debug and profile manifests, and an updater needs it in release.
 ### 1. Backend
 
 ```bash
+cp .env.example .env                       # at the repo root
 cd flutroid_server
 npm install
-UPLOAD_TOKEN=dev-secret npm run dev        # http://localhost:8080
+npm run dev                                # http://localhost:8080
 ```
 
 Metadata → `data/flutroid.db` (SQLite); artifacts → `artifacts/`. Both are
 created on first run and git-ignored. No cloud storage, no CDN.
+
+Both halves read the same repo-root `.env`, so the token is set once:
+
+```ini
+UPLOAD_TOKEN=dev-secret                    # server requires it, CLI sends it
+FLUTROID_SERVER=http://localhost:8080      # lets the CLI drop --server
+PORT=8080
+```
+
+`.env` is git-ignored; `.env.example` is the tracked template. A real
+environment variable always beats the file, which is how CI supplies a token
+without a checked-out `.env` — `UPLOAD_TOKEN=… npm run dev` still works.
 
 ### 2. Wire Flutroid into the app
 
@@ -195,27 +209,78 @@ Future<void> main() async {
 address from a physical device. The package name and release version are read
 from the platform, so the URL is all you have to supply.
 
-### 3. Cut a release, then ship a patch
+### 3. Ship a patch
 
 ```bash
-export FLUTROID_TOKEN=dev-secret            # must match the server's UPLOAD_TOKEN
 cd flutroid_test
 
-# baseline — the code inside the APK you distribute
+# 1. build and install the APK your users have
 flutter build apk --release --target-platform android-arm64
-dart run ../flutroid_cli/bin/flutroid.dart release \
-  --app-id com.example.mybird_test --version 1.0.0+1
+adb install -r build/app/outputs/flutter-apk/app-release.apk
 
-# later: change Dart code, rebuild, ship it
+# 2. change some Dart, rebuild, upload it
 flutter build apk --release --target-platform android-arm64
-dart run ../flutroid_cli/bin/flutroid.dart patch \
-  --app-id com.example.mybird_test --release 1.0.0+1
+dart run ../flutroid_cli/bin/flutroid.dart patch
 ```
 
-Both commands find `libapp.so` in the build output on their own; `--artifact`
-overrides. Install the *release* APK, then let the app check for the patch —
-it stages immediately and loads on the next **cold start** (the snapshot path is
-read once, before the Dart VM starts, so a hot restart won't do).
+That second command takes no arguments because everything is derived:
+
+```
+app id: com.example.mybird_test  (from android/app/build.gradle)
+release: 1.0.0+1  (from pubspec.yaml)
+Uploading 3.4 MB to http://localhost:8080/api/v1/apps/…/patches?…&release=1.0.0%2B1
+✓ uploaded
+  "number": 5
+```
+
+- **app id** ← the Android `applicationId`, the same string the device reports.
+- **release** ← the `version:` in `pubspec.yaml`, which Flutter also feeds Gradle
+  as `versionName+versionCode`, so it matches what the installed app asks for.
+- **patch number** ← the server, which hands out the next one for that release.
+- **token / server** ← the repo-root `.env`.
+
+Deriving the first two is what keeps the halves in step: a patch filed under an
+app id or release the device doesn't report is never offered, and nothing errors
+— the app just sits on old code. Override any of them with `--app-id`,
+`--release`, `--token`, `--server` when you need to.
+
+There is **no `release` command**. A patch is filed under the version the app
+reports for itself, and the update check reads only the patches table, so
+nothing has to register a baseline first.
+
+Do **not** bump `pubspec.yaml` to ship a patch — that would file it against a
+release nobody has installed. Bump the version only when you cut a new APK.
+
+The patch stages as soon as it downloads and loads on the next **cold start**:
+the snapshot path is read once before the Dart VM starts, so a hot restart
+won't do it.
+
+### Update UI
+
+`Flutroid.instance.progress` is a `ValueListenable<FlutroidProgress>` that
+tracks the check through `checking → downloading → staging → staged`. The
+example app binds it to a bar under the `AppBar`:
+
+```dart
+ValueListenableBuilder<FlutroidProgress>(
+  valueListenable: Flutroid.instance.progress,
+  builder: (context, update, child) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Flutroid'),
+      bottom: _UpdateBar.of(update),   // null while idle
+    ),
+    body: child,
+  ),
+  child: /* … */,
+)
+```
+
+`update.fraction` is the real download fraction — the server sends a
+`Content-Length` so the bar fills rather than spinning — and is null when the
+size is unknown, which is the cue for an indeterminate indicator.
+`update.label` is a ready-made line ("Downloading patch 5…", "Patch 5 ready —
+restart to apply"). The check runs automatically on launch;
+`Flutroid.initialize(checkOnStart: false)` turns that off.
 
 ### Verifying on a device
 
@@ -230,26 +295,32 @@ Flutroid` shows the load path, the promotion, and any rollback.
 |---------|---------|
 | `flutroid init --app <dir>` | write the patch loader into the app's `MainActivity` |
 | `flutroid init --dry-run` | show the rewritten file without touching it |
-| `flutroid release --app-id <id> --version <v>` | upload the baseline snapshot |
-| `flutroid patch --app-id <id> --release <v>` | upload new code for a release |
+| `flutroid patch` | build output → new code for the release the app reports |
 
-Shared options: `--server` (default `http://localhost:8080`), `--token` /
-`FLUTROID_TOKEN`, `--app`, `--abi`, `--artifact`, `--platform`.
+`patch` options, all optional: `--app` (default `.`), `--app-id`, `--release`,
+`--token`, `--server`, `--abi` (default `arm64-v8a`), `--artifact`,
+`--platform`. Each falls back to the project, then `.env`, then the flag's
+default.
 
 ## API
 
 | Method | Path                              | Who    | Purpose                       |
 |--------|-----------------------------------|--------|-------------------------------|
-| POST   | `/api/v1/apps/:appId/releases`    | CLI    | upload a base release         |
-| GET    | `/api/v1/apps/:appId/releases`    | —      | list releases                 |
 | POST   | `/api/v1/apps/:appId/patches`     | CLI    | upload a patch                |
 | GET    | `/api/v1/apps/:appId/patches`     | —      | list patches                  |
 | GET    | `/api/v1/apps/:appId/updates`     | device | check for an update           |
 | GET    | `/download/:artifactId`           | device | download an artifact          |
 | GET    | `/health`                         | —      | health check                  |
 
-Uploads require `Authorization: Bearer <UPLOAD_TOKEN>` and send the artifact as
-the raw request body. **Url-encode `+` as `%2B`** in `version`/`release` params —
+`/download` sends a `Content-Length`, which is what lets the updater report a
+real download fraction instead of an indeterminate spinner.
+
+The `/releases` endpoints still exist but nothing calls them: the update check
+reads only the patches table. They are dead weight until something needs a
+baseline registry.
+
+Uploads require `Authorization: Bearer <UPLOAD_TOKEN>` (from `.env`) and send the
+artifact as the raw request body. **Url-encode `+` as `%2B`** in `version`/`release` params —
 the CLI and updater already do.
 
 ## Notes & caveats
@@ -276,7 +347,7 @@ the CLI and updater already do.
 ```
 flutroid/
 ├── flutroid_server/     # self-hosted backend (Express + SQLite + local files)
-├── flutroid_cli/        # `flutroid` CLI — init, release, patch
+├── flutroid_cli/        # `flutroid` CLI — init, patch
 ├── flutroid_package/    # updater + the Android patch loader (Kotlin)
 └── flutroid_test/       # example Flutter app
 ```
