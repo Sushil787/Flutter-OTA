@@ -18,5 +18,9 @@ node_modules/
 dist/
 .dev.vars
 
+# Secrets — real values live here; .env.example is the tracked template
+.env
+.env.local
+
 # Logs
 *.log
