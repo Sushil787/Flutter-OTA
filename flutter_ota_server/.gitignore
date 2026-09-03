@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# Local data (SQLite) + uploaded artifacts
+data/
+artifacts/
+
+*.log
