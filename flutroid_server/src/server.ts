@@ -1,5 +1,6 @@
 import express, { type Request } from "express";
 import fs from "node:fs";
+import { loadDotEnv } from "./env";
 import {
   insertRelease,
   listReleases,
@@ -9,6 +10,10 @@ import {
   listPatches,
 } from "./db";
 import { putArtifact, resolveArtifact } from "./storage";
+
+// Read the repo-root `.env` first. Real environment variables still win, so
+// `UPLOAD_TOKEN=x npm run dev` overrides the file.
+const envFile = loadDotEnv();
 
 const PORT = Number(process.env.PORT ?? 8080);
 const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN ?? "dev-secret";
@@ -108,9 +113,14 @@ app.get("/download/:artifactId", (req, res) => {
   const file = resolveArtifact(req.params.artifactId);
   if (!file) return res.status(404).send("not found");
   res.type("application/octet-stream");
+  // A piped stream sends no Content-Length, which leaves the updater unable to
+  // tell how far along a download is — the difference between a real progress
+  // bar and an indeterminate spinner.
+  res.setHeader("Content-Length", fs.statSync(file).size);
   fs.createReadStream(file).pipe(res);
 });
 
 app.listen(PORT, () => {
   console.log(`Flutroid server on http://localhost:${PORT}  (token: ${UPLOAD_TOKEN})`);
+  console.log(envFile ? `config: ${envFile}` : "config: no .env found; using defaults");
 });
