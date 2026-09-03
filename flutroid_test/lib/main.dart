@@ -1,122 +1,159 @@
+import 'package:flutroid_package/flutroid_package.dart';
 import 'package:flutter/material.dart';
 
-void main() {
-  runApp(const MyApp());
+/// Edit this, rebuild, and ship it with `flutroid patch` — seeing it change
+/// after a cold start is the proof that the downloaded snapshot was loaded.
+const String kBuildMarker = 'hello from the APK 12:02 PM';
+
+/// Where the Flutroid backend is reachable from the device.
+///
+/// `10.0.2.2` is the host machine as seen from the Android emulator; on a
+/// physical device use your machine's LAN address.
+const String kUpdateUrl = 'http://10.0.2.2:8080';
+
+Future<void> main() async {
+  await Flutroid.initialize(updateUrl: kUpdateUrl);
+  runApp(const FlutroidDemo());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class FlutroidDemo extends StatelessWidget {
+  const FlutroidDemo({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Flutroid',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const HomePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _HomePageState extends State<HomePage> {
+  bool _busy = false;
+  String? _message;
 
-  void _incrementCounter() {
+  Future<void> _run(Future<String> Function() action) async {
+    setState(() => _busy = true);
+    final message = await action();
+    if (!mounted) return;
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _busy = false;
+      _message = message;
     });
+  }
+
+  Future<String> _checkForUpdate() async {
+    final staged = await Flutroid.instance.checkForUpdate();
+    return staged == null
+        ? 'Up to date.'
+        : 'Staged patch $staged — restart the app to load it.';
+  }
+
+  Future<String> _rollback() async {
+    await Flutroid.instance.rollback();
+    return 'Rolled back. Restart to run the code in the APK.';
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final theme = Theme.of(context);
+    final state = Flutroid.instance.state;
+
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
+      appBar: AppBar(title: const Text('Flutroid')),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(kBuildMarker, style: theme.textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text(
+                Flutroid.instance.releaseVersion,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 32),
+              _StateCard(state: state),
+              const SizedBox(height: 24),
+              if (_message != null) ...[
+                Text(_message!, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+              ],
+              FilledButton(
+                onPressed: _busy ? null : () => _run(_checkForUpdate),
+                child: const Text('Check for update'),
+              ),
+              TextButton(
+                onPressed: _busy ? null : () => _run(_rollback),
+                child: const Text('Roll back to the bundled code'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StateCard extends StatelessWidget {
+  const _StateCard({required this.state});
+
+  final FlutroidState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _row(
+              context,
+              'Running',
+              state.patchActive
+                  ? 'patch ${state.currentPatch}'
+                  : 'the code in the APK',
             ),
+            _row(
+              context,
+              'Staged',
+              state.stagedPatch == 0
+                  ? 'nothing'
+                  : 'patch ${state.stagedPatch}, loads next launch',
+            ),
+            _row(context, 'Confirmed', state.confirmed ? 'yes' : 'not yet'),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+    );
+  }
+
+  Widget _row(BuildContext context, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(label, style: Theme.of(context).textTheme.labelLarge),
+          ),
+          Flexible(child: Text(value)),
+        ],
+      ),
     );
   }
 }

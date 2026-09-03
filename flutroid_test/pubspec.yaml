@@ -35,6 +35,11 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # The Flutroid updater. `flutroid init` wired the Android side into
+  # android/app/src/main/kotlin/.../MainActivity.kt.
+  flutroid_package:
+    path: ../flutroid_package
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

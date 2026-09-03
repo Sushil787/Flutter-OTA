@@ -1,19 +1,24 @@
+import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
+
+import 'flutroid_platform.dart';
 import 'update_client.dart';
 
-/// Orchestrates the on-device update lifecycle.
+/// Orchestrates the on-device update lifecycle: check, download, verify, stage.
 ///
-/// Call [check] early in `main()` (before/around `runApp`). Downloaded patches
-/// are staged on disk; the patched engine loads them on the next launch.
+/// Staging is all this can do — the engine reads the snapshot path once, before
+/// the Dart VM starts, so a patch downloaded now is loaded at the next launch.
 class Updater {
   Updater({required this.client});
 
   final UpdateClient client;
 
-  /// Checks the server and, if a newer patch exists, downloads + stages it.
+  /// Checks the server and, if a newer patch exists, downloads and stages it.
   ///
-  /// Returns true if a patch was staged (so you can decide whether to prompt
-  /// the user to restart).
-  Future<bool> check({
+  /// Returns the staged patch number, or null if the app is already up to date.
+  /// Network and server failures propagate; being unable to reach the backend
+  /// is the caller's business, not a reason to disturb a working app.
+  Future<int?> check({
     required String platform,
     required String releaseVersion,
     required int currentPatch,
@@ -23,19 +28,31 @@ class Updater {
       releaseVersion: releaseVersion,
       currentPatch: currentPatch,
     );
-    if (info == null) return false;
+    if (info == null) return null;
 
-    // TODO:
-    //   1. download bytes via client.download(info.downloadUrl)
-    //   2. verify hash == info.hash
-    //   3. write to the engine's staging path (app-private dir)
-    //   4. record the new patch number so next check compares correctly
-    throw UnimplementedError();
-  }
+    final bytes = await client.download(info.downloadUrl);
 
-  /// The patch number currently installed/staged on this device.
-  Future<int> currentPatchNumber() async {
-    // TODO: read from local storage; 0 = only the base release.
-    throw UnimplementedError();
+    // Verify before the bytes go anywhere near the engine's load path. The
+    // native side hashes them again after the channel hop; both checks are
+    // cheap next to the cost of handing the engine a corrupt snapshot.
+    final actual = sha256.convert(bytes).toString();
+    if (actual != info.hash) {
+      throw UpdateClientException(
+        'patch ${info.patchNumber} failed verification: '
+        'expected ${info.hash}, got $actual',
+      );
+    }
+
+    final staged = await FlutroidPlatform.stage(
+      patchNumber: info.patchNumber,
+      bytes: bytes,
+      sha256: info.hash,
+    );
+    if (!staged) {
+      throw UpdateClientException('patch ${info.patchNumber} could not be staged');
+    }
+
+    debugPrint('[flutroid] staged patch ${info.patchNumber}; active next launch');
+    return info.patchNumber;
   }
 }

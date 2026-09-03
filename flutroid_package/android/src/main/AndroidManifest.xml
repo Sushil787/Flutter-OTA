@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Merged into the host app. Flutter only grants INTERNET to the debug and
+         profile manifests, but an OTA updater needs it in release too. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+</manifest>

@@ -3,16 +3,22 @@
 /// Initialize once early in `main()`:
 ///
 /// ```dart
-/// await Flutroid.initialize(
-///   packageName: 'com.example.mybird_test',
-///   updateUrl: 'http://localhost:8080',
-/// );
+/// void main() async {
+///   await Flutroid.initialize(updateUrl: 'http://10.0.2.2:8080');
+///   runApp(const MyApp());
+/// }
 /// ```
 ///
-/// Then it can check the backend for a newer patch for this package, download
-/// it, verify it, and stage it for the (patched) engine to load on next boot.
+/// It asks the backend whether a newer patch exists for this app's release,
+/// downloads it, verifies its sha256, and stages it. The engine picks the
+/// staged snapshot up at the next launch, because the snapshot path is read
+/// once before the Dart VM starts.
+///
+/// The Android side of that — an override in your `MainActivity` — is written
+/// for you by `flutroid init`.
 library;
 
 export 'src/flutroid.dart';
-export 'src/updater.dart';
+export 'src/flutroid_platform.dart';
 export 'src/update_client.dart';
+export 'src/updater.dart';

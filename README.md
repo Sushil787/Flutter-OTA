@@ -1,134 +1,282 @@
-# Flutroid
+# Flutroid 🐦
 
-Your own **OTA (over-the-air) code-push for Flutter** — ship Dart code updates to
-installed apps without going through the app store. Shorebird-style, self-hosted
-on a plain local server.
+**Self-hosted OTA (over-the-air) code-push for Flutter — with no engine fork.**
+Push Dart code updates straight to installed apps, no app-store round-trip.
 
-## How it works
+A personal project to understand how Shorebird-style code push actually works:
+built from scratch, self-hosted end to end, no vendor. The whole thing runs on a
+laptop, and the on-device patch loading is done from the app's own Android code —
+a stock Flutter SDK, no custom engine build.
 
-```
-                        flutroid CLI                         device
-   ┌──────────────┐   (build + upload)   ┌──────────────┐  (check + download)  ┌──────────────┐
-   │  your app +  │ ───────────────────▶ │   flutroid   │ ◀─────────────────── │ flutroid_pkg │
-   │ local engine │   artifact bytes     │    server    │   patch + artifact   │  (in the app)│
-   └──────────────┘                      │  Express +   │                      └──────────────┘
-                                         │  SQLite +    │                              │
-                                         │  local files │                     patched engine loads
-                                         └──────────────┘                     the staged patch on boot
-```
-
-1. You build the app against the **patched engine** and cut a **base release** with the CLI.
-2. Later you change Dart code and push a **patch** with the CLI.
-3. The app embeds **`flutroid_package`**, which asks the server if a newer patch exists,
-   downloads + verifies it, and stages it.
-4. The patched engine loads the staged patch on the next launch.
-
-## Repo layout
-
-| Path                 | What it is                                                        |
-|----------------------|-------------------------------------------------------------------|
-| `flutroid_server/`   | Backend — **Express + TypeScript**, **SQLite** metadata, artifacts on local disk |
-| `flutroid_package/`  | Dart updater that ships inside the app (`Flutroid.initialize(...)`) |
-| `flutroid_cli/`      | `flutroid` CLI — build, release, patch, upload                    |
-| `mybird_test/`       | Example Flutter app                                               |
-| `engine/`            | Patched Flutter engine source (git-ignored — built separately)    |
-
-> Status: the **server is functional** (upload / list / update-check / download all work).
-> The **CLI** and **updater package** are scaffolds with `TODO` stubs to fill in.
+> Status: hobby project. The backend, CLI, updater package and Android
+> integration are all implemented, and a release APK builds with the integration
+> in place. **Loading a patch has not yet been confirmed on real hardware** — see
+> [Verifying on a device](#verifying-on-a-device).
+>
+> It's **version-pinned by design** — Flutroid targets one Flutter/Dart/engine
+> version and one ABI per app. Releases and patches are built against that exact
+> combo, and a patch only loads on an app built with the same one. A Dart AOT
+> snapshot is only compatible with the engine it was compiled for.
 
 ---
 
-## User procedure
+## Why
 
-### 0. Prerequisites
+Shorebird and friends are great, but they're a hosted service. Flutroid rebuilds
+the idea in the open, on my own machine, to learn three things:
 
-- Flutter SDK + the **patched engine** built locally (see `LEARNING.md`).
-- Node.js (for the server) and the Dart SDK (bundled with Flutter).
+1. how a Flutter app can load **new Dart code at runtime**,
+2. what a release/patch **backend** actually needs to store and serve, and
+3. how a **CLI** + an on-device **updater** tie it all together.
 
-### 1. Run the backend
+## How it works
+
+Two halves: a **distribution** loop (build → upload → serve → download), and the
+**engine seam** that swaps which code runs.
+
+### 1. Distribution
+
+```
+   dev machine                        server (self-hosted)             device
+  ┌───────────┐   build + upload   ┌──────────────────────┐   check + download   ┌──────────────┐
+  │ flutroid  │ ─────────────────▶ │  Express + SQLite +   │ ◀─────────────────── │ flutroid_pkg │
+  │   CLI     │   libapp.so bytes  │  local file storage   │   patch + artifact   │  (in the app)│
+  └───────────┘                    └──────────────────────┘                      └──────────────┘
+```
+
+- **CLI** uploads the app's Dart snapshot (`libapp.so`) as a *release* (the
+  baseline in the APK) or a *patch* (new code on top of a release).
+- **Server** stores the bytes on disk, content-addressed by sha256, with metadata
+  in SQLite, and answers "is there a newer patch for this release?".
+- **Updater package** in the app asks on launch, downloads, verifies the sha256,
+  and **stages** the snapshot at `filesDir/flutroid/staged/libapp.so`.
+
+### 2. The engine seam — from the app, not the engine
+
+This is the part that sounds like it needs a forked engine. It doesn't.
+
+The engine resolves its Dart snapshot from an **ordered list** of
+`--aot-shared-library-name` values and uses the **first one that resolves**. That
+list is assembled by the Android embedder, which is ordinary Java on the app's
+classpath — not engine C++. Three facts make it work, all in the engine that
+ships inside your Flutter SDK at `<flutter>/engine/src/flutter`:
+
+| Where | What it does |
+|-------|--------------|
+| `FlutterActivityAndFragmentDelegate.java:336` | passes `host.getFlutterShellArgs().toArray()` to `FlutterEngineGroup` |
+| `FlutterEngineGroup.java:59-63` | hands those straight to `FlutterLoader.ensureInitializationComplete` |
+| `FlutterLoader.java:316-338` | splices the caller's args in **before** its own two `--aot-shared-library-name` entries for the bundled `libapp.so` |
+| `shell/common/switches.cc:399` | appends every value, in order, into `settings.application_library_path` |
+| `runtime/dart_snapshot.cc:78-85` | walks that list and returns the **first** library whose snapshot symbols resolve |
+
+`FlutterActivity.getFlutterShellArgs()` is public and overridable, so the app can
+put its own path at the front of that list:
+
+```kotlin
+class MainActivity : FlutterActivity() {
+    // flutroid:begin — generated by `flutroid init`; edits are overwritten
+    override fun getFlutterShellArgs(): io.flutter.embedding.engine.FlutterShellArgs =
+        dev.flutroid.FlutroidPatch.applyTo(this, super.getFlutterShellArgs())
+    // flutroid:end
+}
+```
+
+`flutroid init` writes that for you. First-match-wins means a staged patch loads
+when present, and a missing or unloadable one falls straight back to the code in
+the APK — a bad update can't brick the app.
+
+### 3. Rollback
+
+A patch that loads but *crashes* is the case fallback can't catch, so
+`FlutroidPatch` keeps a small state file next to the snapshots:
+
+```
+filesDir/flutroid/
+├── state.json          currentPatch, stagedPatch, confirmed, bootAttempts
+├── current/libapp.so   what this process was told to load
+└── staged/libapp.so    downloaded; promoted to current at the next launch
+```
+
+Each launch on an unconfirmed patch increments `bootAttempts`; the first rendered
+frame confirms it and resets the counter. Two failed launches and the patch is
+deleted, so the next start runs the APK's own code.
+
+## Components & status
+
+| Component            | What it does                                                | Status |
+|----------------------|-------------------------------------------------------------|--------|
+| `flutroid_server/`   | Express + TypeScript, SQLite metadata, local-file artifacts   | ✅ works (verified end-to-end) |
+| `flutroid_cli/`      | `flutroid init` / `release` / `patch`                        | ✅ implemented, unit-tested |
+| `flutroid_package/`  | on-device check / download / verify / stage, + the Android patch loader | ✅ implemented, unit-tested |
+| Android integration  | `getFlutterShellArgs` override, written by `flutroid init`   | ✅ compiles into a release APK; patch load unconfirmed on hardware |
+| `flutroid_test/`     | example app — shows the running patch and stages new ones     | — |
+
+---
+
+## Support
+
+### Flutter
+
+|                    |                                                                    |
+|--------------------|--------------------------------------------------------------------|
+| **Verified on**    | Flutter 3.35.7 · Dart 3.9.2 · engine `6b24e1b529` (rev `035316565a`) |
+| **Expected to work** | any Flutter with the v2 Android embedding (3.0+)                  |
+| **Not supported**  | iOS, web, desktop                                                    |
+
+The hooks it relies on have been stable across the whole v2 embedding, but only
+3.35.7 is actually verified. That matters less than it sounds: Flutroid is
+version-pinned anyway, so a Flutter upgrade means *cut a new release and
+re-verify*, never *patch across versions*.
+
+**iOS is out of reach without an engine fork** and always will be — iOS can't
+`dlopen` downloaded code at all, which is why Shorebird ships a Dart interpreter
+inside a forked engine to do it. There is no app-side equivalent.
+
+### Android
+
+|                        |                                                                        |
+|------------------------|------------------------------------------------------------------------|
+| **Min API**            | 24 — Flutter 3.35's own floor. The plugin declares `minSdk 21` and adds no constraint of its own. |
+| **compileSdk / targetSdk** | 36, unchanged from Flutter's defaults.                             |
+| **Verified build**     | `flutter build apk --release`, arm64-v8a, AGP 8.9.1 · Gradle 8.12 · Kotlin 2.1.0 · JDK 11 target |
+| **ABIs**               | one release and patch per ABI; `--abi` defaults to `arm64-v8a`.         |
+
+The load-bearing assumption is that `dlopen()` works on a file in the app's
+`filesDir`. Android 10 (API 29) restricted **`exec()`ing** binaries from the app
+home directory for `targetSdk >= 29`; `dlopen()` was not part of that change, and
+Shorebird depends on the same thing. Confirm it on your minimum API level before
+building anything on top of this.
+
+The plugin also merges `INTERNET` into the app's manifest — Flutter only grants
+it to the debug and profile manifests, and an updater needs it in release.
+
+---
+
+## Quick start
+
+### 1. Backend
 
 ```bash
 cd flutroid_server
 npm install
-UPLOAD_TOKEN=dev-secret npm run dev     # http://localhost:8080
+UPLOAD_TOKEN=dev-secret npm run dev        # http://localhost:8080
 ```
 
-Metadata is written to `data/flutroid.db` (SQLite); uploaded artifacts land in
-`artifacts/` (both git-ignored, auto-created).
+Metadata → `data/flutroid.db` (SQLite); artifacts → `artifacts/`. Both are
+created on first run and git-ignored. No cloud storage, no CDN.
 
-### 2. Integrate the updater into your app
+### 2. Wire Flutroid into the app
 
-Add the package and initialize it early in `main()`:
+```bash
+dart run flutroid_cli/bin/flutroid.dart init --app flutroid_test
+```
+
+That writes the `getFlutterShellArgs` override into the app's `MainActivity`
+(Kotlin or Java). It's idempotent — the block is fenced with markers and
+regenerated in place — and `--dry-run` shows the result without writing.
+
+Add the dependency and initialize the updater:
+
+```yaml
+# pubspec.yaml
+dependencies:
+  flutroid_package:
+    path: ../flutroid_package
+```
 
 ```dart
-import 'package:flutroid_package/flutroid_package.dart';
-
 Future<void> main() async {
-  await Flutroid.initialize(
-    packageName: 'com.example.mybird_test',
-    updateUrl: 'http://localhost:8080',
-  );
-
-  await Flutroid.instance.checkForUpdate(
-    platform: 'android',
-    releaseVersion: '1.0.0+1',
-  );
-
+  await Flutroid.initialize(updateUrl: 'http://10.0.2.2:8080');
   runApp(const MyApp());
 }
 ```
 
-### 3. Cut a base release
+`10.0.2.2` is the host machine as seen from the Android emulator; use your LAN
+address from a physical device. The package name and release version are read
+from the platform, so the URL is all you have to supply.
 
-Build against the patched engine, then upload the base artifact:
-
-```bash
-export FLUTROID_TOKEN=dev-secret          # must match the server's UPLOAD_TOKEN
-
-cd flutroid_cli
-dart pub get
-
-dart run bin/flutroid.dart release \
-  --server http://localhost:8080 \
-  --app-id com.example.mybird_test \
-  --platform android \
-  --version 1.0.0+1 \
-  --artifact ../mybird_test/build/app/intermediates/.../libapp.so
-```
-
-Ship this build to users through the store as usual.
-
-### 4. Push a patch (the actual OTA update)
-
-Change some Dart code, rebuild, and upload it as a patch against the release:
+### 3. Cut a release, then ship a patch
 
 ```bash
-dart run bin/flutroid.dart patch \
-  --server http://localhost:8080 \
-  --app-id com.example.mybird_test \
-  --platform android \
-  --release 1.0.0+1 \
-  --artifact ../mybird_test/build/.../patch.bin
+export FLUTROID_TOKEN=dev-secret            # must match the server's UPLOAD_TOKEN
+cd flutroid_test
+
+# baseline — the code inside the APK you distribute
+flutter build apk --release --target-platform android-arm64
+dart run ../flutroid_cli/bin/flutroid.dart release \
+  --app-id com.example.mybird_test --version 1.0.0+1
+
+# later: change Dart code, rebuild, ship it
+flutter build apk --release --target-platform android-arm64
+dart run ../flutroid_cli/bin/flutroid.dart patch \
+  --app-id com.example.mybird_test --release 1.0.0+1
 ```
 
-Next time an installed app checks in, it downloads the patch and applies it on the
-following launch — no store update required.
+Both commands find `libapp.so` in the build output on their own; `--artifact`
+overrides. Install the *release* APK, then let the app check for the patch —
+it stages immediately and loads on the next **cold start** (the snapshot path is
+read once, before the Dart VM starts, so a hot restart won't do).
 
----
+### Verifying on a device
 
-## API reference
+Change `kBuildMarker` in [flutroid_test/lib/main.dart](flutroid_test/lib/main.dart)
+between the two builds. Ship the second as a patch, force-stop the app, reopen
+it: the new string on screen is the downloaded snapshot running. `adb logcat -s
+Flutroid` shows the load path, the promotion, and any rollback.
 
-| Method | Path                              | Who calls it | Purpose                       |
-|--------|-----------------------------------|--------------|-------------------------------|
-| POST   | `/api/v1/apps/:appId/releases`    | CLI          | upload a base release         |
-| GET    | `/api/v1/apps/:appId/releases`    | —            | list releases                 |
-| POST   | `/api/v1/apps/:appId/patches`     | CLI          | upload a patch                |
-| GET    | `/api/v1/apps/:appId/patches`     | —            | list patches                  |
-| GET    | `/api/v1/apps/:appId/updates`     | device       | check for an available update |
-| GET    | `/download/:artifactId`           | device       | download an artifact          |
-| GET    | `/health`                         | anyone       | health check                  |
+## Commands
 
-Uploads require `Authorization: Bearer <UPLOAD_TOKEN>` and send the artifact as the
-raw request body. **Url-encode `+` as `%2B`** in version/release query params.
+| Command | Purpose |
+|---------|---------|
+| `flutroid init --app <dir>` | write the patch loader into the app's `MainActivity` |
+| `flutroid init --dry-run` | show the rewritten file without touching it |
+| `flutroid release --app-id <id> --version <v>` | upload the baseline snapshot |
+| `flutroid patch --app-id <id> --release <v>` | upload new code for a release |
 
-See each subproject's own `README.md` for details.
+Shared options: `--server` (default `http://localhost:8080`), `--token` /
+`FLUTROID_TOKEN`, `--app`, `--abi`, `--artifact`, `--platform`.
+
+## API
+
+| Method | Path                              | Who    | Purpose                       |
+|--------|-----------------------------------|--------|-------------------------------|
+| POST   | `/api/v1/apps/:appId/releases`    | CLI    | upload a base release         |
+| GET    | `/api/v1/apps/:appId/releases`    | —      | list releases                 |
+| POST   | `/api/v1/apps/:appId/patches`     | CLI    | upload a patch                |
+| GET    | `/api/v1/apps/:appId/patches`     | —      | list patches                  |
+| GET    | `/api/v1/apps/:appId/updates`     | device | check for an update           |
+| GET    | `/download/:artifactId`           | device | download an artifact          |
+| GET    | `/health`                         | —      | health check                  |
+
+Uploads require `Authorization: Bearer <UPLOAD_TOKEN>` and send the artifact as
+the raw request body. **Url-encode `+` as `%2B`** in `version`/`release` params —
+the CLI and updater already do.
+
+## Notes & caveats
+
+- **Full-snapshot swap, not binary diff.** A patch is a whole `libapp.so`, a few
+  MB. Shorebird's diffs are applied by Rust code living *inside* their engine, so
+  that optimization is exactly what staying off the engine costs.
+- **Version-pinned.** A patch must be built with the same engine, Flutter/Dart
+  version and ABI as the release it targets. Bump any of them and you need a
+  fresh release; old patches won't load on it.
+- **Next cold start, not immediately.** The snapshot path is read once before the
+  Dart VM starts, and the VM outlives the Activity. Nothing app-side can change
+  that.
+- **Google Play policy is a real question.** The Device and Network Abuse policy
+  restricts apps updating themselves outside Play. Shorebird's apps are accepted
+  on the argument that Dart runs in a VM, but it is a grey area — go in aware.
+- **Verify before staging, always.** `dart_snapshot.cc` searches the library list
+  *per symbol*, so a truncated-but-loadable `.so` could resolve some symbols and
+  not others, mixing snapshots. The sha256 is checked in Dart after download and
+  again natively before staging.
+
+## Repo layout
+
+```
+flutroid/
+├── flutroid_server/     # self-hosted backend (Express + SQLite + local files)
+├── flutroid_cli/        # `flutroid` CLI — init, release, patch
+├── flutroid_package/    # updater + the Android patch loader (Kotlin)
+└── flutroid_test/       # example Flutter app
+```

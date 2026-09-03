@@ -1,30 +1,72 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:flutroid_package/flutroid_package.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:mybird_test/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  const channel = MethodChannel('dev.flutroid/flutroid');
+  var confirmed = false;
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  /// Stands in for the Android side, which is not present in a widget test.
+  void mockPlatform({int currentPatch = 0, int stagedPatch = 0}) {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      switch (call.method) {
+        case 'state':
+          return <String, Object?>{
+            'currentPatch': currentPatch,
+            'stagedPatch': stagedPatch,
+            'confirmed': confirmed,
+            'bootAttempts': 0,
+            'patchActive': currentPatch != 0,
+            'packageName': 'com.example.mybird_test',
+            'releaseVersion': '1.0.0+1',
+          };
+        case 'confirmLaunch':
+          confirmed = true;
+          return null;
+        default:
+          return null;
+      }
+    });
+  }
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  setUp(() => confirmed = false);
+
+  testWidgets('shows the build marker and the bundled-code state', (tester) async {
+    mockPlatform();
+    await Flutroid.initialize(updateUrl: 'http://example.invalid', checkOnStart: false);
+
+    await tester.pumpWidget(const FlutroidDemo());
+    await tester.pumpAndSettle();
+
+    expect(find.text(kBuildMarker), findsOneWidget);
+    expect(find.text('1.0.0+1'), findsOneWidget);
+    expect(find.text('the code in the APK'), findsOneWidget);
+  });
+
+  testWidgets('reports a running patch and one staged for next launch', (tester) async {
+    mockPlatform(currentPatch: 3, stagedPatch: 4);
+    await Flutroid.initialize(updateUrl: 'http://example.invalid', checkOnStart: false);
+
+    await tester.pumpWidget(const FlutroidDemo());
+    await tester.pumpAndSettle();
+
+    expect(find.text('patch 3'), findsOneWidget);
+    expect(find.text('patch 4, loads next launch'), findsOneWidget);
+  });
+
+  testWidgets('confirms the launch once a frame has rendered', (tester) async {
+    mockPlatform(currentPatch: 2);
+    await Flutroid.initialize(updateUrl: 'http://example.invalid', checkOnStart: false);
+
+    expect(confirmed, isFalse, reason: 'nothing has rendered yet');
+
+    await tester.pumpWidget(const FlutroidDemo());
+    await tester.pumpAndSettle();
+
+    expect(confirmed, isTrue);
   });
 }
