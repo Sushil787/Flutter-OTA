@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'flutroid_platform.dart';
+import 'flutroid_progress.dart';
 import 'update_client.dart';
 import 'updater.dart';
 
@@ -44,6 +46,15 @@ class Flutroid {
 
   /// Handles the download/verify/stage lifecycle.
   final Updater updater;
+
+  /// Live progress of the running check.
+  ///
+  /// Rebuild on it with a `ValueListenableBuilder`; the example app puts it
+  /// under the app bar. The last outcome stays readable after a check ends.
+  ValueListenable<FlutroidProgress> get progress => _progress;
+
+  final ValueNotifier<FlutroidProgress> _progress =
+      ValueNotifier<FlutroidProgress>(const FlutroidProgress());
 
   FlutroidState _state;
 
@@ -137,13 +148,31 @@ class Flutroid {
         platform: 'android',
         releaseVersion: releaseVersion,
         currentPatch: _state.currentPatch,
+        onProgress: _emit,
       );
       if (staged != null) _state = await FlutroidPlatform.state();
       return staged;
     } catch (error) {
       debugPrint('[flutroid] update check failed: $error');
+      _emit(FlutroidProgress(
+        stage: FlutroidStage.failed,
+        error: error is UpdateClientException ? error.message : '$error',
+      ));
       return null;
     }
+  }
+
+  /// Publishes [next], dropping download ticks too small to see. Chunks arrive
+  /// every few kilobytes, and rebuilding on each one costs frames for nothing.
+  void _emit(FlutroidProgress next) {
+    final current = _progress.value;
+    if (next.stage == FlutroidStage.downloading &&
+        current.stage == FlutroidStage.downloading &&
+        next.total > 0) {
+      final delta = (next.fraction ?? 0) - (current.fraction ?? 0);
+      if (delta < 0.01 && next.received < next.total) return;
+    }
+    _progress.value = next;
   }
 
   /// Marks the running patch as good, ending the crash-rollback countdown.

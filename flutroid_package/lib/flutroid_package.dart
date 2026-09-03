@@ -20,5 +20,6 @@ library;
 
 export 'src/flutroid.dart';
 export 'src/flutroid_platform.dart';
+export 'src/flutroid_progress.dart';
 export 'src/update_client.dart';
 export 'src/updater.dart';

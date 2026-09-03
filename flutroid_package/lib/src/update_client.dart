@@ -54,22 +54,37 @@ class UpdateClient {
     );
   }
 
-  /// Downloads an artifact's bytes.
+  /// Downloads an artifact, reporting bytes as they arrive.
   ///
-  /// [artifactUrl] is the server-relative `downloadUrl` from [UpdateInfo], or
-  /// an absolute URL.
-  Future<Uint8List> download(String artifactUrl) async {
+  /// [onProgress] gets the bytes so far and the total, where the total is 0 if
+  /// the server sent no `content-length`. The response is streamed rather than
+  /// buffered so the count is real: a patch is a few megabytes, long enough on
+  /// a phone to be worth showing.
+  Future<Uint8List> download(
+    String artifactUrl, {
+    void Function(int received, int total)? onProgress,
+  }) async {
     final uri = artifactUrl.startsWith('http')
         ? Uri.parse(artifactUrl)
         : _uri(artifactUrl);
 
-    final response = await _http.get(uri);
+    final response = await _http.send(http.Request('GET', uri));
     if (response.statusCode != 200) {
       throw UpdateClientException(
         'download failed (${response.statusCode}) for $uri',
       );
     }
-    return response.bodyBytes;
+
+    final total = response.contentLength ?? 0;
+    final buffer = BytesBuilder(copy: false);
+    // Report zero first so the bar appears empty rather than jumping in.
+    onProgress?.call(0, total);
+
+    await for (final chunk in response.stream) {
+      buffer.add(chunk);
+      onProgress?.call(buffer.length, total);
+    }
+    return buffer.takeBytes();
   }
 
   /// Releases the underlying HTTP client.
