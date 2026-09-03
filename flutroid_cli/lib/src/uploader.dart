@@ -79,8 +79,4 @@ const List<String> _artifactPaths = [
   'build/app/intermediates/flutter/<mode>/<abi>/libapp.so',
 ];
 
-/// Reads the upload token from `--token` or `FLUTROID_TOKEN`.
-String? resolveToken(String? explicit) =>
-    explicit ?? Platform.environment['FLUTROID_TOKEN'];
-
 String _size(int bytes) => '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';

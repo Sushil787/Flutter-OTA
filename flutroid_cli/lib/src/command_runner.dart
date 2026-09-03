@@ -2,13 +2,15 @@ import 'package:args/command_runner.dart';
 
 import 'commands/init_command.dart';
 import 'commands/patch_command.dart';
-import 'commands/release_command.dart';
 
 /// `flutroid` — the OTA CLI.
 ///
 ///   flutroid init      wire the patch loader into an app's Android side
-///   flutroid release   upload the baseline snapshot the app ships with
-///   flutroid patch     upload new Dart code for an existing release
+///   flutroid patch     upload new Dart code for the release an app was built as
+///
+/// There is no `release` command: a patch is filed under the version the app
+/// reports for itself, and the update check reads only the patches table, so
+/// nothing has to register a baseline first.
 class FlutroidCommandRunner extends CommandRunner<int> {
   FlutroidCommandRunner() : super('flutroid', 'Flutroid OTA command-line tool.') {
     argParser.addOption(
@@ -17,7 +19,6 @@ class FlutroidCommandRunner extends CommandRunner<int> {
       defaultsTo: 'http://localhost:8080',
     );
     addCommand(InitCommand());
-    addCommand(ReleaseCommand());
     addCommand(PatchCommand());
   }
 }
